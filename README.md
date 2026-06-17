@@ -1,702 +1,528 @@
+# 📖 Документация проекта: Классификатор дефектов пайки
 
-# 🔍 Сервис классификации дефектов пайки радиоэлементов
+## 📋 Содержание
 
-## 📋 Краткое описание задачи
-
-Сервис предназначен для автоматической классификации дефектов пайки радиоэлементов на печатных платах с использованием технологий компьютерного зрения. Система анализирует макро-фотографии паяных соединений и определяет тип дефекта или确认ирует качественное соединение.
-
-### Целевые классы дефектов:
-
-| Класс | Название дефекта | Описание |
-|-------|------------------|----------|
-| **normal** | Качественная пайка | Нормальное, правильно выполненное паяное соединение |
-| **cold** | Холодная пайка | Недостаточный прогрев, плохое смачивание |
-| **bridge** | Перемычка припоя | Избыток припоя, создающий короткое замыкание |
-| **excess** | Избыток припоя | Слишком много припоя на контакте |
-| **unsolder** | Недостаток припоя | Слишком мало припоя, плохой контакт |
-
-### Области применения:
-- Контроль качества на производстве электроники
-- Автоматизация инспекции печатных плат
-- Обучение операторов и снижение человеческого фактора
+1. [Описание проекта](#-описание-проекта)
+2. [Структура проекта](#-структура-проекта)
+3. [Python-модули](#-python-модули)
+4. [Требования](#-требования)
+5. [Структура датасета](#-структура-датасета)
+6. [Архитектура модели](#-архитектура-модели)
+7. [Обучение модели](#-обучение-модели)
+8. [Использование](#-использование)
+9. [Известные особенности](#-известные-особенности)
+10. [Метрики](#-метрики)
 
 ---
 
-## 🏗 Архитектура решения
+## 🎯 Описание проекта
 
-### 1. Модель компьютерного зрения
+Проект представляет собой систему классификации дефектов пайки на основе свёрточной нейронной сети **ResNet18** с использованием трансферного обучения (pre-trained на ImageNet).
+
+**Цель:** автоматическое определение типа дефекта пайки по изображению.
+
+**Поддерживаемые классы дефектов:**
+
+| Класс | Описание |
+|-------|----------|
+| `bridge` | Перемычка между контактами |
+| `excess` | Избыток припоя |
+| `unsolder` | Непропай |
+
+---
+
+## 📁 Структура проекта
 
 ```
-Предобученная модель ResNet18 (ImageNet)
-           ↓
-    Замена классификационной головы
-           ↓
-    Dropout(0.2) → Linear(512→128) → ReLU → Linear(128→5)
-           ↓
-    Дообучение на датасете дефектов пайки
+project/
+├── dataset/
+│   ├── train/
+│   │   ├── bridge/
+│   │   ├── excess/
+│   │   └── unsolder/
+│   └── val/
+│       ├── bridge/
+│       ├── excess/
+│       └── unsolder/
+├── models/                      # Сохранённые модели (.pth файлы)
+│   ├── v1.0.0.pth
+│   └── metadata.json
+├── train.py                     # Скрипт обучения
+├── inference.py                 # Скрипт инференса
+├── model_manager.py             # Управление моделями
+├── utils.py                     # Вспомогательные функции
+└── README.md
 ```
 
-**Характеристики модели:**
-- **Архитектура:** ResNet18 с трансферным обучением
-- **Входной размер:** 224×224×3 (RGB)
-- **Выход:** 5 классов с вероятностями
-- **Параметры:** ~11.7 млн (обучаемых: ~0.5 млн)
-- **Точность на валидации:** целевая >85%
+---
 
-### 2. Препроцессинг изображений
+## 🐍 Python-модули
+
+### `train.py`
+
+**Назначение:** Скрипт для обучения модели.
+
+**Основная функция:**
 
 ```python
-Трансформации для инференса:
-├── Resize(224, 224)           # Приведение к стандартному размеру
-├── ToTensor()                  # Преобразование в torch.Tensor
-└── Normalize(mean=[0.485, 0.456, 0.406],
-              std=[0.229, 0.224, 0.225])  # Нормализация ImageNet
+def train_and_save_model() -> Tuple[nn.Module, ModelManager]:
+    """
+    Обучение модели ResNet18 и сохранение лучшей версии.
+    
+    Returns:
+        model: Обученная PyTorch модель
+        model_manager: Экземпляр ModelManager для работы с моделью
+    """
 ```
 
-**Валидация входных данных:**
-- ✅ Форматы: JPG, JPEG, PNG
-- ✅ Размер файла: 1 КБ - 10 МБ
-- ✅ Минимальное разрешение: 64×64 пикселя
-- ✅ Цветовой режим: RGB
+**Что делает:**
+- Загружает датасет из `dataset/train` и `dataset/val`
+- Применяет аугментации к обучающей выборке
+- Обучает модель в течение 20 эпох
+- Сохраняет лучшую модель по точности на валидации
+- Возвращает обученную модель и менеджер
 
-### 3. Структура сервиса
+**Использование:**
 
+```python
+from train import train_and_save_model
+
+model, model_manager = train_and_save_model()
 ```
-soldering_defect_service/
-│
-├── app/
-│   ├── __init__.py
-│   ├── main.py                 # FastAPI приложение
-│   ├── models.py               # Определение модели
-│   ├── preprocessor.py         # Препроцессинг изображений
-│   └── inference.py            # Логика инференса
-│
-├── models/
-│   └── resnet18_soldering.pth  # Обученные веса модели
-│
-├── tests/
-│   ├── test_api.py             # Тестирование API
-│   └── test_model.py           # Тестирование модели
-│
-├── requirements.txt             # Зависимости Python
-├── run.py                       # Скрипт запуска
-└── README.md                    # Документация
-```
-
-### 4. API эндпоинты
-
-| Метод | Эндпоинт | Описание | Коды ответа |
-|-------|----------|----------|-------------|
-| GET | `/health` | Проверка работоспособности | 200 |
-| POST | `/predict` | Классификация изображения | 200, 400, 413, 500 |
-| GET | `/docs` | Swagger UI документация | 200 |
-| GET | `/redoc` | ReDoc документация | 200 |
 
 ---
 
-## 🚀 Инструкции по установке и запуску
+### `model_manager.py`
 
-### Системные требования
+**Назначение:** Класс для управления жизненным циклом моделей (сохранение, загрузка, версионирование).
 
-- **Python:** 3.9+
-- **RAM:** 4 GB (рекомендуется 8 GB)
-- **GPU:** Optional (CUDA для ускорения)
-- **Дисковое пространство:** 2 GB
+**Класс `ModelManager`:**
 
-### Шаг 1: Клонирование и установка зависимостей
+```python
+class ModelManager:
+    def __init__(self, models_dir: str = "models"):
+        """
+        Args:
+            models_dir: Директория для хранения моделей
+        """
+    
+    def save_model(
+        self,
+        model: nn.Module,
+        class_names: List[str],
+        metrics: Dict[str, Any],
+        version: str
+    ) -> str:
+        """
+        Сохранение модели и метаданных.
+        
+        Args:
+            model: PyTorch модель
+            class_names: Список имён классов
+            metrics: Словарь с метриками обучения
+            version: Версия модели (например, "1.0.0")
+        
+        Returns:
+            Путь к сохранённому файлу модели
+        """
+    
+    def load_model(self, version: str = "latest") -> Tuple[nn.Module, Dict]:
+        """
+        Загрузка модели по версии.
+        
+        Args:
+            version: Версия модели или "latest" для последней
+        
+        Returns:
+            Кортеж (модель, метаданные)
+        """
+    
+    def list_models(self) -> List[Dict[str, Any]]:
+        """
+        Получение списка всех сохранённых моделей.
+        
+        Returns:
+            Список словарей с информацией о моделях
+        """
+```
+
+**Использование:**
+
+```python
+from model_manager import ModelManager
+
+# Создание менеджера
+manager = ModelManager(models_dir="models")
+
+# Загрузка последней модели
+model, metadata = manager.load_model(version="latest")
+
+# Просмотр всех моделей
+all_models = manager.list_models()
+for m in all_models:
+    print(f"Version: {m['version']}, Accuracy: {m['metrics']['val_accuracy']:.2f}%")
+```
+
+---
+
+### `inference.py`
+
+**Назначение:** Скрипт для инференса (предсказания) на новых изображениях.
+
+**Основные функции:**
+
+```python
+def predict(
+    image_path: str,
+    model_manager: ModelManager = None,
+    model: nn.Module = None,
+    class_names: List[str] = None
+) -> Dict[str, Any]:
+    """
+    Предсказание класса для одного изображения.
+    
+    Args:
+        image_path: Путь к изображению
+        model_manager: ModelManager для загрузки модели (если model не указан)
+        model: Загруженная модель (опционально)
+        class_names: Список имён классов (опционально)
+    
+    Returns:
+        Словарь с результатами:
+        {
+            'class': str,              # Предсказанный класс
+            'confidence': float,       # Уверенность (0-1)
+            'probabilities': Dict      # Вероятности всех классов
+        }
+    """
+
+def predict_batch(
+    image_paths: List[str],
+    model_manager: ModelManager = None,
+    batch_size: int = 32
+) -> List[Dict[str, Any]]:
+    """
+    Пакетное предсказание для нескольких изображений.
+    
+    Args:
+        image_paths: Список путей к изображениям
+        model_manager: ModelManager для загрузки модели
+        batch_size: Размер батча
+    
+    Returns:
+        Список результатов для каждого изображения
+    """
+```
+
+**Использование:**
+
+```python
+from inference import predict, predict_batch
+from model_manager import ModelManager
+
+# Загрузка модели
+manager = ModelManager()
+
+# Предсказание для одного изображения
+result = predict(
+    image_path="test_image.png",
+    model_manager=manager
+)
+print(f"Класс: {result['class']}, Уверенность: {result['confidence']:.2%}")
+
+# Пакетное предсказание
+results = predict_batch(
+    image_paths=["img1.png", "img2.png", "img3.png"],
+    model_manager=manager,
+    batch_size=16
+)
+
+for i, res in enumerate(results):
+    print(f"Изображение {i+1}: {res['class']} ({res['confidence']:.2%})")
+```
+
+---
+
+### `utils.py`
+
+**Назначение:** Вспомогательные функции для работы с данными и визуализации.
+
+**Основные функции:**
+
+```python
+def visualize_predictions(
+    image_paths: List[str],
+    predictions: List[Dict[str, Any]],
+    save_path: str = None
+) -> None:
+    """
+    Визуализация результатов предсказания.
+    
+    Args:
+        image_paths: Список путей к изображениям
+        predictions: Список результатов предсказания
+        save_path: Путь для сохранения визуализации (опционально)
+    """
+
+def get_transforms(phase: str = "val") -> transforms.Compose:
+    """
+    Получение трансформаций для указанной фазы.
+    
+    Args:
+        phase: "train" или "val"
+    
+    Returns:
+        Compose объект с трансформациями
+    """
+
+def plot_training_history(metrics: Dict[str, List[float]]) -> None:
+    """
+    Построение графиков истории обучения.
+    
+    Args:
+        metrics: Словарь с метриками по эпохам
+    """
+```
+
+**Использование:**
+
+```python
+from utils import visualize_predictions, plot_training_history
+
+# Визуализация предсказаний
+visualize_predictions(
+    image_paths=["test1.png", "test2.png"],
+    predictions=[result1, result2],
+    save_path="predictions.png"
+)
+
+# Построение графиков обучения
+plot_training_history({
+    'train_acc': [85.2, 88.5, 91.3],
+    'val_acc': [82.1, 85.7, 89.2]
+})
+```
+
+---
+
+## ⚙️ Требования
+
+- Python 3.10+
+- PyTorch 2.0+
+- torchvision
+- Pillow
+- matplotlib (для визуализации)
+- CUDA (опционально, для ускорения на GPU)
+
+**Установка зависимостей:**
 
 ```bash
-# Создание директории проекта
-mkdir soldering_defect_service
-cd soldering_defect_service
-
-# Установка зависимостей
-pip install -r requirements.txt
+pip install torch torchvision Pillow matplotlib
 ```
 
-### Шаг 2: Подготовка модели
+---
+
+## 🗂 Структура датасета
+
+Датасет организован по принципу `ImageFolder` из torchvision:
+
+```
+dataset/
+├── train/
+│   ├── bridge/       # 3583 изображения (.png)
+│   ├── excess/       # 2471 изображение (.png)
+│   └── unsolder/     # 1281 изображение (.png)
+└── val/
+    ├── bridge/       # 768 изображений (.png)
+    ├── excess/       # 530 изображений (.png)
+    └── unsolder/     # 275 изображений (.png)
+```
+
+### Поддерживаемые форматы изображений
+
+`.jpg`, `.jpeg`, `.png`, `.ppm`, `.bmp`, `.pgm`, `.tif`, `.tiff`, `.webp`
+
+> ⚠️ **Важно:** В текущем датасете используются только файлы формата `.png`.
+
+---
+
+## 🧠 Архитектура модели
+
+Используется предобученная модель **ResNet18** с модифицированным классификатором:
 
 ```python
-# Быстрое создание тестовой модели (если нет обученной)
-python -c "
-import torch
-import torch.nn as nn
-from torchvision import models
-
-model = models.resnet18(weights=None)
-num_features = model.fc.in_features
+model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
 model.fc = nn.Sequential(
     nn.Dropout(0.2),
     nn.Linear(num_features, 128),
     nn.ReLU(),
-    nn.Linear(128, 5)
+    nn.Linear(128, NUM_CLASSES)  # 3 класса
 )
-torch.save(model.state_dict(), 'models/resnet18_soldering.pth')
-print('✅ Тестовая модель создана')
-"
 ```
 
-### Шаг 3: Запуск сервиса
+### Параметры модели
 
-#### Способ 1: Через скрипт run.py
-```bash
-python run.py
-```
-
-#### Способ 2: Напрямую через uvicorn
-```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-#### Способ 3: С указанием порта и хоста
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 4
-```
-
-### Шаг 4: Проверка работоспособности
-
-```bash
-# Проверка health endpoint
-curl http://127.0.0.1:8000/health
-
-# Ожидаемый ответ:
-{"status": "ok"}
-```
+| Параметр | Значение |
+|----------|----------|
+| Базовая архитектура | ResNet18 |
+| Предобучение | ImageNet1K_V1 |
+| Dropout | 0.2 |
+| Скрытый слой | 128 нейронов |
+| Выходов | 3 (по числу классов) |
+| Размер входного изображения | 224 × 224 |
 
 ---
 
-## 📝 Примеры запросов и ответов
+## 🚀 Обучение модели
 
-### Пример 1: Классификация через curl
+### Конфигурация обучения
 
-```bash
-# Отправка изображения на классификацию
-curl -X POST http://127.0.0.1:8000/predict \
-  -F "file=@soldering_sample.jpg"
-```
+| Параметр | Значение |
+|----------|----------|
+| Batch size | 32 |
+| Количество эпох | 20 |
+| Learning rate | 0.001 |
+| Оптимизатор | Adam |
+| Функция потерь | CrossEntropyLoss |
+| Устройство | CUDA (если доступно), иначе CPU |
 
-**Успешный ответ (200 OK):**
-```json
-{
-  "class_name": "bridge",
-  "probability": 0.8921,
-  "all_classes": {
-    "normal": 0.0123,
-    "unsolder": 0.0234,
-    "cold": 0.0456,
-    "excess": 0.0266,
-    "bridge": 0.8921
-  }
-}
-```
+### Аугментации для обучающей выборки
 
-### Пример 2: Классификация через Python
+- `Resize(224, 224)` — приведение к фиксированному размеру
+- `RandomHorizontalFlip()` — случайное отражение по горизонтали
+- `RandomRotation(15)` — случайный поворот до ±15°
+- `Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])` — нормализация ImageNet
+
+### Для валидации
+
+Только `Resize` и `Normalize` (без аугментаций).
+
+---
+
+## 💻 Использование
+
+### 1. Обучение модели
 
 ```python
-import requests
-from PIL import Image
-import io
+from train import train_and_save_model
 
-# Загрузка и подготовка изображения
-image_path = "soldering_sample.jpg"
-with open(image_path, 'rb') as f:
-    files = {'file': (image_path, f, 'image/jpeg')}
-
-# Отправка запроса
-response = requests.post('http://127.0.0.1:8000/predict', files=files)
-
-# Обработка результата
-if response.status_code == 200:
-    result = response.json()
-    print(f"🔍 Дефект: {result['class_name']}")
-    print(f"📊 Уверенность: {result['probability']:.2%}")
-    print("\n📈 Все вероятности:")
-    for class_name, prob in result['all_classes'].items():
-        print(f"   {class_name}: {prob:.2%}")
-else:
-    print(f"❌ Ошибка: {response.json()['detail']}")
+model, model_manager = train_and_save_model()
 ```
 
-### Пример 3: Обработка ошибок
-
-**Ошибка: неподдерживаемый формат (400 Bad Request)**
-```bash
-curl -X POST http://127.0.0.1:8000/predict -F "file=@document.pdf"
-```
-
-```json
-{
-  "detail": "Неподдерживаемый формат файла. Разрешены: .jpg, .jpeg, .png"
-}
-```
-
-**Ошибка: файл слишком большой (413 Payload Too Large)**
-```json
-{
-  "detail": "Размер файла превышает 10 МБ"
-}
-```
-
-**Ошибка: маленькое разрешение (400 Bad Request)**
-```json
-{
-  "detail": "Разрешение слишком маленькое (минимум 64x64 пикселей)"
-}
-```
-
----
-
-## 🧪 Тестирование сервиса
-
-### Запуск тестов
-```bash
-# Тестирование API эндпоинтов
-python tests/test_api.py
-
-# Тестирование модели
-python tests/test_model.py
-```
-
-### Пример тестового скрипта
-```python
-# test_api.py
-from fastapi.testclient import TestClient
-from app.main import app
-
-client = TestClient(app)
-
-def test_health():
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-
-def test_predict_with_valid_image():
-    with open("test_image.jpg", "rb") as f:
-        response = client.post(
-            "/predict",
-            files={"file": ("test.jpg", f, "image/jpeg")}
-        )
-    assert response.status_code == 200
-    assert "class_name" in response.json()
-    assert "probability" in response.json()
-```
-
----
-
-## 📊 Мониторинг и логирование
-
-### Доступные метрики
-- **Health checks:** каждые 5 секунд
-- **Время инференса:** логируется каждый запрос
-- **Количество ошибок:** по типам (400, 413, 500)
-- **Использование GPU:** при наличии CUDA
-
-### Просмотр логов
-```bash
-# Логи в реальном времени
-uvicorn app.main:app --reload --log-level debug
-
-# Сохранение логов в файл
-uvicorn app.main:app --log-level info --access-log > api.log 2>&1
-```
-
----
-
-## 🔧 Устранение неполадок
-
-### Проблема: Сервис не запускается
-```bash
-# Проверка свободного порта
-lsof -i :8000
-
-# Убить процесс, использующий порт
-kill -9 <PID>
-
-# Использовать другой порт
-uvicorn app.main:app --port 8001
-```
-
-### Проблема: Модель не загружается
-```bash
-# Проверка существования файла модели
-ls -la models/
-
-# Создание символической ссылки
-ln -s /path/to/real/model.pth models/resnet18_soldering.pth
-```
-
-### Проблема: CUDA out of memory
-```python
-# Принудительное использование CPU
-import torch
-torch.cuda.is_available = lambda: False
-
-# Или в коде приложения:
-device = torch.device('cpu')
-```
-
----
-
-## 📈 Производительность
-
-| Метрика | Значение |
-|---------|----------|
-| **Время инференса (CPU)** | ~50-100 мс |
-| **Время инференса (GPU)** | ~10-20 мс |
-| **Пропускная способность** | ~50-100 запросов/сек (CPU) |
-| **Потребление памяти** | ~500 MB (CPU), ~1.5 GB (GPU) |
-| **Размер модели** | ~45 MB |
-
----
-
-## 🔐 Безопасность
-
-- ✅ Валидация всех входных данных
-- ✅ Ограничение размера файлов (10 MB)
-- ✅ Whitelist допустимых форматов
-- ✅ Защита от path traversal
-- ✅ CORS настроен для production
-
----
-
-## 📚 Дополнительная документация
-
-### Интерактивная документация
-- **Swagger UI:** http://127.0.0.1:8000/docs
-- **ReDoc:** http://127.0.0.1:8000/redoc
-- **OpenAPI JSON:** http://127.0.0.1:8000/openapi.json
-
-### Связанные ресурсы
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [PyTorch Vision Models](https://pytorch.org/vision/stable/models.html)
-- [ResNet Paper](https://arxiv.org/abs/1512.03385)
-
----
-
-## 👥 Контакты и поддержка
-
-**Разработчик:** Алексей Петров
-**Email:** alex.petrov@example.com
-**Проект:** Сервис классификации дефектов пайки v1.0.0
-
----
-
-## 📄 Лицензия
-
-MIT License - свободное использование, модификация и распространение.
-
----
-
-**✨ Сервис готов к использованию! ✨**
-```
+### 2. Загрузка обученной модели
 
 ```python
-# Создание дополнительных файлов для полной структуры
-%%writefile soldering_defect_service/run.py
-#!/usr/bin/env python3
-"""
-Скрипт для запуска FastAPI сервиса классификации дефектов пайки
-"""
+from model_manager import ModelManager
 
-import uvicorn
-import sys
-import os
+manager = ModelManager()
+model, metadata = manager.load_model(version="latest")
 
-# Добавляем текущую директорию в PATH
-sys.path.insert(0, os.path.dirname(__file__))
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("🔍 СЕРВИС КЛАССИФИКАЦИИ ДЕФЕКТОВ ПАЙКИ")
-    print("=" * 60)
-    print("\n📋 Информация:")
-    print("   - Документация API: http://127.0.0.1:8000/docs")
-    print("   - Health check: http://127.0.0.1:8000/health")
-    print("\n🚀 Запуск сервера...\n")
-
-    uvicorn.run(
-        "app.main:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=True,
-        log_level="info",
-        access_log=True
-    )
+print(f"Версия: {metadata['version']}")
+print(f"Точность: {metadata['metrics']['best_val_accuracy']:.2f}%")
 ```
+
+### 3. Предсказание на новом изображении
 
 ```python
-# Создание тестового клиента для демонстрации
-%%writefile test_api_demo.py
-"""
-Демонстрация работы API сервиса классификации дефектов пайки
-"""
+from inference import predict
 
-import requests
-from PIL import Image
-import io
-import json
+result = predict(
+    image_path="new_image.png",
+    model_manager=manager
+)
 
-BASE_URL = "http://127.0.0.1:8000"
-
-def test_health():
-    """Тестирование health endpoint"""
-    print("=" * 60)
-    print("1️⃣ Тестирование GET /health")
-    print("=" * 60)
-
-    response = requests.get(f"{BASE_URL}/health")
-    print(f"Статус: {response.status_code}")
-    print(f"Ответ: {json.dumps(response.json(), indent=2)}")
-    print()
-    return response.status_code == 200
-
-def test_prediction():
-    """Тестирование prediction endpoint"""
-    print("=" * 60)
-    print("2️⃣ Тестирование POST /predict")
-    print("=" * 60)
-
-    # Создаём тестовое изображение
-    img = Image.new('RGB', (224, 224), color=(100, 150, 200))
-    img_bytes = io.BytesIO()
-    img.save(img_bytes, format='PNG')
-    img_bytes = img_bytes.getvalue()
-
-    # Отправляем запрос
-    files = {"file": ("test_image.png", img_bytes, "image/png")}
-    response = requests.post(f"{BASE_URL}/predict", files=files)
-
-    print(f"Статус: {response.status_code}")
-    if response.status_code == 200:
-        result = response.json()
-        print("\n📊 Результат классификации:")
-        print(f"   🏷️  Предсказанный класс: {result['class_name']}")
-        print(f"   📈 Вероятность: {result['probability']:.4f} ({result['probability']*100:.2f}%)")
-        print("\n   📋 Вероятности по всем классам:")
-        for class_name, prob in result['all_classes'].items():
-            bar = "█" * int(prob * 50)
-            print(f"      {class_name:12} : {prob:.4f} {bar}")
-    else:
-        print(f"❌ Ошибка: {response.json()}")
-
-    print()
-    return response.status_code == 200
-
-def test_invalid_image():
-    """Тестирование с невалидным изображением"""
-    print("=" * 60)
-    print("3️⃣ Тестирование обработки ошибок")
-    print("=" * 60)
-
-    # Слишком маленькое изображение
-    img = Image.new('RGB', (32, 32), color=(255, 255, 255))
-    img_bytes = io.BytesIO()
-    img.save(img_bytes, format='PNG')
-    img_bytes = img_bytes.getvalue()
-
-    files = {"file": ("small.png", img_bytes, "image/png")}
-    response = requests.post(f"{BASE_URL}/predict", files=files)
-
-    print(f"Изображение 32x32 пикселя:")
-    print(f"   Статус: {response.status_code}")
-    print(f"   Ошибка: {response.json()['detail']}")
-    print()
-
-    # Неподдерживаемый формат
-    files = {"file": ("test.txt", b"fake content", "text/plain")}
-    response = requests.post(f"{BASE_URL}/predict", files=files)
-
-    print(f"Неподдерживаемый формат (txt):")
-    print(f"   Статус: {response.status_code}")
-    print(f"   Ошибка: {response.json()['detail']}")
-    print()
-
-def main():
-    """Главная функция демонстрации"""
-    print("\n" + "🎯" * 30)
-    print("ДЕМОНСТРАЦИЯ РАБОТЫ API СЕРВИСА")
-    print("🎯" * 30 + "\n")
-
-    try:
-        # Проверяем доступность сервиса
-        requests.get(f"{BASE_URL}/health", timeout=2)
-
-        # Запускаем тесты
-        test_health()
-        test_prediction()
-        test_invalid_image()
-
-        print("=" * 60)
-        print("✅ Демонстрация завершена!")
-        print("🌐 Для просмотра документации откройте:")
-        print("   http://127.0.0.1:8000/docs")
-        print("=" * 60)
-
-    except requests.exceptions.ConnectionError:
-        print("\n❌ Сервис не запущен!")
-        print("\nДля запуска выполните:")
-        print("   cd soldering_defect_service")
-        print("   python run.py")
-        print("\nЗатем повторите запуск этого скрипта")
-
-if __name__ == "__main__":
-    main()
+print(f"Предсказанный класс: {result['class']}")
+print(f"Уверенность: {result['confidence']:.2%}")
+print(f"Вероятности всех классов:")
+for cls, prob in result['probabilities'].items():
+    print(f"  {cls}: {prob:.2%}")
 ```
+
+### 4. Пакетная обработка
 
 ```python
-# Вывод информации о созданных файлах
-print("=" * 70)
-print("📁 ПОДГОТОВЛЕНА ПОЛНАЯ ДОКУМЕНТАЦИЯ ПРОЕКТА")
-print("=" * 70)
-print()
+from inference import predict_batch
 
-print("✅ Созданы следующие файлы:")
+image_paths = ["img1.png", "img2.png", "img3.png"]
+results = predict_batch(image_paths, model_manager=manager)
 
-print("\n1. 📖 README.md")
-print("   └── Полная документация проекта")
-print("       • Краткое описание задачи")
-print("       • Архитектура решения")
-print("       • Инструкции по установке и запуску")
-print("       • Примеры запросов/ответов")
-print("       • Устранение неполадок")
-print("       • Метрики производительности")
-
-print("\n2. 🚀 run.py")
-print("   └── Скрипт для запуска сервиса")
-
-print("\n3. 🧪 test_api_demo.py")
-print("   └── Демонстрационный скрипт для тестирования API")
-
-print("\n" + "=" * 70)
-print("📋 ИНСТРУКЦИЯ ПО ЗАПУСКУ")
-print("=" * 70)
-print()
-
-print("1️⃣ Установите зависимости:")
-print("   pip install -r requirements.txt")
-print()
-print("2️⃣ Запустите сервис:")
-print("   cd soldering_defect_service")
-print("   python run.py")
-print()
-print("3️⃣ В другом терминале запустите демонстрацию:")
-print("   python test_api_demo.py")
-print()
-print("4️⃣ Или откройте в браузере:")
-print("   http://127.0.0.1:8000/docs")
-print()
-
-print("=" * 70)
-print("📊 ПРИМЕР РАБОТЫ API ИЗ README.md")
-print("=" * 70)
-
-# Демонстрация примера из README
-example_response = {
-    "class_name": "bridge",
-    "probability": 0.8921,
-    "all_classes": {
-        "normal": 0.0123,
-        "unsolder": 0.0234,
-        "cold": 0.0456,
-        "excess": 0.0266,
-        "bridge": 0.8921
-    }
-}
-
-print("\nПример ответа API:")
-print(json.dumps(example_response, indent=2))
-
-print("\n" + "=" * 70)
-print("✨ Документация готова к использованию!")
-print("=" * 70)
+for path, result in zip(image_paths, results):
+    print(f"{path}: {result['class']} ({result['confidence']:.2%})")
 ```
+
+---
+
+## ⚠️ Известные особенности
+
+### 1. Служебные папки Jupyter
+
+При работе в Google Colab или Jupyter автоматически создаются папки `.ipynb_checkpoints`, которые `ImageFolder` ошибочно воспринимает как классы.
+
+**Решение:** удалить их перед обучением:
 
 ```python
-# Создание краткой версии README для быстрого ознакомления
-%%writefile QUICKSTART.md
-# 🚀 Быстрый старт
+import shutil
+from pathlib import Path
 
-## 1. Установка (1 минута)
-```bash
-pip install fastapi uvicorn torch torchvision pillow numpy requests
+DATA_DIR = "dataset"
+for split in ['train', 'val']:
+    checkpoint_path = Path(DATA_DIR) / split / ".ipynb_checkpoints"
+    if checkpoint_path.exists():
+        shutil.rmtree(checkpoint_path)
 ```
 
-## 2. Запуск (1 минута)
-```bash
-cd soldering_defect_service
-python run.py
-```
+### 2. Актуальный список классов
 
-## 3. Тестирование (1 минута)
-Откройте в браузере: http://127.0.0.1:8000/docs
-
-## 📝 Простой пример запроса
+Список классов определяется **на основе имён папок в датасете**, а не переменной `CLASS_NAMES`. Убедитесь, что они совпадают:
 
 ```python
-import requests
-
-with open("image.jpg", "rb") as f:
-    response = requests.post(
-        "http://127.0.0.1:8000/predict",
-        files={"file": ("image.jpg", f, "image/jpeg")}
-    )
-
-print(response.json())
+CLASS_NAMES = ['bridge', 'excess', 'unsolder']  # Должны соответствовать папкам
 ```
 
-## 📤 Пример ответа
+### 3. Регистр расширений файлов
 
-```json
-{
-  "class_name": "bridge",
-  "probability": 0.89,
-  "all_classes": {
-    "normal": 0.01,
-    "unsolder": 0.02,
-    "cold": 0.04,
-    "excess": 0.03,
-    "bridge": 0.89
-  }
-}
-```
+`ImageFolder` чувствителен к регистру расширений. Файлы с расширением `.JPG` не будут найдены.
 
-## ❓ Нужна помощь?
-Полная документация: [README.md](README.md)
-```
+**Решение:** привести все расширения к нижнему регистру:
 
 ```python
-# Проверка создания всех файлов
-import os
+from pathlib import Path
 
-print("📁 ПРОВЕРКА СОЗДАНИЯ ФАЙЛОВ")
-print("=" * 50)
-
-files_to_check = [
-    "README.md",
-    "QUICKSTART.md",
-    "test_api_demo.py",
-    "soldering_defect_service/run.py",
-    "soldering_defect_service/app/main.py"
-]
-
-all_exist = True
-for file in files_to_check:
-    if os.path.exists(file):
-        size = os.path.getsize(file)
-        print(f"✅ {file:40} ({size:,} bytes)")
-    else:
-        print(f"❌ {file:40} [НЕ НАЙДЕН]")
-        all_exist = False
-
-print("=" * 50)
-if all_exist:
-    print("🎉 Все файлы успешно созданы!")
-    print("\n📚 Документация включает:")
-    print("   • README.md - полное описание проекта")
-    print("   • QUICKSTART.md - быстрый старт за 3 минуты")
-    print("   • Примеры запросов/ответов")
-    print("   • Инструкции по установке и запуску")
-    print("   • Архитектуру решения")
-else:
-    print("⚠️ Некоторые файлы отсутствуют. Проверьте выполнение всех ячеек.")
+for path in Path("dataset").rglob('*'):
+    if path.is_file() and path.suffix != path.suffix.lower():
+        path.rename(path.with_suffix(path.suffix.lower()))
 ```
+
+---
+
+## 📊 Метрики
+
+После обучения сохраняются следующие метрики:
+
+- `train_accuracy` — точность на обучающей выборке
+- `val_accuracy` — точность на валидации в последней эпохе
+- `best_val_accuracy` — лучшая точность на валидации за всё обучение
+- `epochs` — количество эпох
+- `batch_size` — размер батча
+- `learning_rate` — скорость обучения
+
+Модель сохраняется только при достижении новой лучшей точности на валидации.
+
+---
+
+## 📝 Changelog
+
+### v1.0.0 (2026-06-17)
+- ✅ Базовая реализация обучения на ResNet18
+- ✅ Поддержка 3 классов дефектов: `bridge`, `excess`, `unsolder`
+- ✅ Аугментации данных для обучающей выборки
+- ✅ Сохранение лучшей модели через `ModelManager`
+- ✅ Модуль `inference.py` для предсказаний
+- ✅ Модуль `utils.py` для визуализации
+- ✅ Исправлена проблема со служебными папками `.ipynb_checkpoints`
+
+---
+
+## 📬 Контакты
+
+При возникновении вопросов или проблем — создайте issue в репозитории проекта.
